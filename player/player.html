@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>__TITLE__</title>
+<style>html,body{margin:0;height:100%;background:#0b0d14;color:#e8ecf4;font:14px system-ui,sans-serif}
+#mc-boot{position:fixed;inset:0;display:grid;place-items:center;text-align:center;line-height:1.6}
+#mc-boot b{font-size:22px;letter-spacing:.06em} #mc-boot button{margin-top:14px;font:inherit;padding:8px 22px;border-radius:8px;border:1px solid #55607e;background:#1d2333;color:#fff;cursor:pointer}</style>
+</head>
+<body>
+<div id="mc-boot"><div><b>RYŪ · 龍</b><br><span id="mc-msg">loading…</span><br><button id="mc-go" hidden>▶ play</button></div></div>
+<!-- single-file offline player: every ES module, asset and the soundtrack are inlined below (built by tools/build-player.mjs) -->
+<script id="mc-modules" type="application/json">/*__MODULES__*/</script>
+<script id="mc-assets" type="application/json">/*__ASSETS__*/</script>
+<script>
+(function () {
+  var mods = JSON.parse(document.getElementById('mc-modules').textContent), imports = {};
+  for (var k in mods) imports[k] = URL.createObjectURL(new Blob([mods[k]], { type: 'text/javascript' }));
+  var im = document.createElement('script'); im.type = 'importmap'; im.textContent = JSON.stringify({ imports: imports }); document.head.appendChild(im);
+  window.__MC_ASSETS = JSON.parse(document.getElementById('mc-assets').textContent);
+  window.__MC_PLAYER = { scale: __SCALE__, audio: window.__MC_ASSETS['audio/soundtrack.m4a'] || null };
+})();
+</script>
+<script type="module">
+const { boot } = await import('@mc/src/main.js');
+const { liveUI } = await import('@mc/src/ui.js');
+const P = window.__MC_PLAYER, q = new URLSearchParams(location.search);
+const msg = document.getElementById('mc-msg'), go = document.getElementById('mc-go');
+try {
+  const mc = await boot({ scale: +(q.get('scale') || P.scale), query: q });
+  window.__mc = mc;
+  const audio = P.audio ? new Audio(P.audio) : null; if (audio) audio.preload = 'auto';
+  msg.textContent = 'preparing shaders…'; await new Promise(r => setTimeout(r, 30)); mc.warm(); mc.render(0);
+  msg.textContent = `${mc.W}×${mc.H} · ${mc.info().renderer.replace(/^ANGLE \(|\)$/g, '')}`; go.hidden = false;
+  go.onclick = () => { document.getElementById('mc-boot').remove(); liveUI(mc, q, { audio, autoplay: true }); };
+} catch (e) { msg.textContent = 'could not start: ' + e; console.error(e); }
+</script>
+</body>
+</html>

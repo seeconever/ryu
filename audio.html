@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>RYŪ · soundtrack</title>
+<style>
+  html, body { margin: 0; background: #0d1018; color: #e6eaf2; font: 13px system-ui, sans-serif; }
+  header { padding: 10px 14px; display: flex; gap: 14px; align-items: center; flex-wrap: wrap; }
+  button { font: inherit; padding: 6px 16px; border-radius: 7px; border: 1px solid #55607e; background: #1d2333; color: #fff; cursor: pointer; }
+  canvas { display: block; width: 100%; height: auto; }
+  #msg { color: #9aa6c0; }
+</style>
+</head>
+<body>
+<!-- RYŪ soundtrack lab (owner: sound). Renders src/audio.js offline, masters it, plays it and draws the analysis
+     sheet (waveform + soft clip / limiter, spectrogram, loudness + impact margin, phone check, band gains at every hit). tools/render-audio.mjs drives it headless:
+       window.renderSoundtrack(sr, { report, verify }) -> { sr, n, L, R (base64 Float32, mastered), peak, master, report, verifyDb }
+       window.drawSheet()         -> draws the last render on #sheet (docs/team-sound.jpg) -->
+<header><b>RYŪ · 龍 — soundtrack</b><button id="go">render + play</button><span id="msg">synthesized offline, nothing is sampled</span></header>
+<canvas id="sheet" width="1920" height="1300"></canvas>
+<script type="module">
+import { renderSoundtrack, masterSoundtrack, analyze, MIX } from './src/audio.js';
+import { CUES, SHOTS, DURATION } from './src/shots.js';
+import { fft } from './src/audio-kit.js';
+
+const b64 = (f32) => { const u8 = new Uint8Array(f32.buffer, f32.byteOffset, f32.byteLength); let s = ''; for (let i = 0; i < u8.length; i += 0x8000) s += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000)); return btoa(s); };
+let last = null;
+
+async function render(sr = 48000, report = true, keepRaw = false) {
+  const t0 = performance.now(), oac = new OfflineAudioContext(2, Math.round(sr * DURATION), sr);
+  const { marks, cues } = await renderSoundtrack(oac, { cues: CUES, shots: SHOTS, duration: DURATION });   // cues = as played (picture sync)
+  const t1 = performance.now(), buf = await oac.startRendering(), t2 = performance.now();
+  const raw = keepRaw ? [Float32Array.from(buf.getChannelData(0)), Float32Array.from(buf.getChannelData(1))] : null;
+  const m = masterSoundtrack(buf.getChannelData(0), buf.getChannelData(1), sr), t3 = performance.now();
+  const rep = report ? analyze(m.L, m.R, sr, { shots: SHOTS, cues, gain: m.gain, clipRed: m.clipRed, marks }) : null;
+  if (rep) rep.synced = Object.fromEntries(Object.keys(cues).filter(k => cues[k] !== CUES[k]).map(k => [k, [CUES[k], cues[k]]]));
+  last = { sr, L: m.L, R: m.R, raw, gain: m.gain, clipRed: m.clipRed, cues, report: rep, master: { target: MIX.target, ceiling: MIX.ceiling, rawI: +m.rawI.toFixed(2), gainDb: +m.gainDb.toFixed(2), I: +m.I.toFixed(2), tp: +m.tp.toFixed(2), maxGR: +m.maxGR.toFixed(2), clipDb: +m.clipDb.toFixed(2), clipOvers: m.clipOvers, ceilUsed: +m.ceilUsed.toFixed(2) },
+    ms: { graph: Math.round(t1 - t0), render: Math.round(t2 - t1), master: Math.round(t3 - t2), analyze: Math.round(performance.now() - t3) } };
+  return last;
+}
+// determinism check: render the graph again and compare the raw PCM. The code is a pure function of the cues (seeded
+// noise only), but Chrome sums the inputs of a node in a pointer-hashed order, so float32 rounding differs by a few LSB
+// wherever 3+ voices meet (2-input sums are exact). Returns the largest raw difference in dBFS (-Infinity = bit-identical).
+async function rawDiff(sr, ref) {
+  const oac = new OfflineAudioContext(2, Math.round(sr * DURATION), sr);
+  await renderSoundtrack(oac, { cues: CUES, shots: SHOTS, duration: DURATION });
+  const b = await oac.startRendering(); let m = 0;
+  for (let c = 0; c < 2; c++) { const x = b.getChannelData(c), y = ref[c]; for (let i = 0; i < x.length; i++) { const d = Math.abs(x[i] - y[i]); if (d > m) m = d; } }
+  return m > 0 ? +(20 * Math.log10(m)).toFixed(1) : -Infinity;
+}
+window.renderSoundtrack = async (sr = 48000, opts = {}) => {
+  const r = await render(sr, opts.report !== false, !!opts.verify); let peak = 0; for (let i = 0; i < r.L.length; i++) peak = Math.max(peak, Math.abs(r.L[i]), Math.abs(r.R[i]));
+  const verifyDb = opts.verify ? await rawDiff(sr, r.raw) : null;
+  return { sr, n: r.L.length, L: b64(r.L), R: b64(r.R), peak, master: r.master, report: r.report, ms: r.ms, verifyDb };
+};
+
+// ---------------- analysis sheet ----------------
+const W = 1920, H = 1300, X0 = 70, X1 = 1890, tx = (t) => X0 + (t / DURATION) * (X1 - X0);
+const SETCOL = { island: '#3d7f6e', shrine: '#8a5a3a', paddies: '#5e9a4a', town: '#3b6fa8', sea: '#3f8f9a', storm: '#3a3566', sky: '#5b78b8', card: '#6a4a7a' };
+function draw(r = last) {
+  if (!r) return;
+  const cv = document.getElementById('sheet'), g = cv.getContext('2d'), { L, R, sr, gain, report: rep, master: ms } = r, n = L.length, cols = X1 - X0;
+  g.fillStyle = '#0d1018'; g.fillRect(0, 0, W, H);
+  g.fillStyle = '#e6eaf2'; g.font = 'bold 26px system-ui, sans-serif'; g.fillText('RYŪ · 龍 — soundtrack (sound dept)', X0, 38);
+  const ph = Object.entries(rep.phone), phImp = rep.phone.s24?.db, phNext = ph.filter(([k]) => k !== 's24').reduce((a, b) => (b[1].db > a[1].db ? b : a)), weak = rep.bands.filter(b => b.weak.length);
+  g.font = '15px system-ui, sans-serif'; g.fillStyle = '#9aa6c0';
+  g.fillText(`integrated ${rep.I} LUFS · true peak ${rep.tp} dBTP · LRA ${rep.LRA} LU · soft clip max ${ms.clipDb} dB + limiter max GR ${ms.maxGR} dB · short-term max ${rep.maxS.S} LUFS (${rep.maxS.from}-${rep.maxS.t} s) · clicks ${rep.clicks.length} · > 9 kHz max ${rep.hiss.top[0].db} dBFS @ ${rep.hiss.top[0].t} s (limit ${rep.hiss.limit})`, X0, 60);
+  g.fillText(`breakout ${rep.margin.impactM} LUFS momentary, ${rep.margin.lu} LU over the next loudest (${rep.margin.nextM} @ ${rep.margin.nextAt} s) · phone (HPF 350 Hz): breakout ${phImp} dBFS, next ${phNext[0]} ${phNext[1].db} · cue band gains < 3 dB: ${weak.length ? weak.map(b => b.name).join(', ') : 'none'}`, X0, 78);
+  // shot strip
+  const yS = 88, hS = 30;
+  for (const s of SHOTS) { g.fillStyle = SETCOL[s.set] || '#444'; g.fillRect(tx(s.t0) + 1, yS, tx(s.t1) - tx(s.t0) - 2, hS); g.fillStyle = '#fff'; g.font = '12px system-ui'; if (tx(s.t1) - tx(s.t0) > 26) g.fillText(s.id.slice(1), tx(s.t0) + 4, yS + 13); g.fillStyle = '#cfd6e6'; g.font = '10px system-ui'; if (tx(s.t1) - tx(s.t0) > 40) g.fillText(s.set, tx(s.t0) + 4, yS + 26); }
+  // time grid
+  const yEnd = 1235; g.strokeStyle = '#ffffff14'; g.lineWidth = 1; g.fillStyle = '#7d879c'; g.font = '11px system-ui';
+  for (let t = 0; t <= DURATION; t += 5) { g.beginPath(); g.moveTo(tx(t), yS + hS); g.lineTo(tx(t), yEnd); g.stroke(); g.fillText(t + 's', tx(t) - 8, yEnd + 16); }
+  // waveform (peak per column) + soft clip + limiter gain reduction
+  const yW = 126, hW = 150, mid = yW + hW / 2;
+  g.fillStyle = '#16203a'; g.fillRect(X0, yW, cols, hW);
+  for (let c = 0; c < cols; c++) { const a = Math.floor(c / cols * n), b = Math.floor((c + 1) / cols * n); let pl = 0, pr = 0, gr = 1; for (let i = a; i < b; i++) { pl = Math.max(pl, Math.abs(L[i])); pr = Math.max(pr, Math.abs(R[i])); if (gain[i] < gr) gr = gain[i]; }
+    g.fillStyle = '#7fb4ff'; g.fillRect(X0 + c, mid - pl * hW / 2, 1, pl * hW / 2); g.fillStyle = '#9fd0ff'; g.fillRect(X0 + c, mid, 1, pr * hW / 2);
+    const cr = r.clipRed ? r.clipRed[Math.min(r.clipRed.length - 1, Math.floor(a / sr * 10))] : 0; if (cr > 0.05) { g.fillStyle = '#ffb02e'; g.fillRect(X0 + c, yW, 1, Math.min(hW / 2, cr * 6)); }
+    if (gr < 0.999) { const d = -20 * Math.log10(gr); g.fillStyle = '#ff5a4a'; g.fillRect(X0 + c, yW + hW - Math.min(hW / 2, d * 6), 1, Math.min(hW / 2, d * 6)); } }
+  label(g, 'waveform (L up, R down) · orange (top) = soft clip, red (bottom) = limiter gain reduction (6 px/dB)', X0 + 6, yW + 14);
+  // spectrogram (log frequency 30 Hz - 16 kHz)
+  const yP = 288, hP = 330, N = 4096, F0 = 30, F1 = 16000, img = g.createImageData(cols, hP), win = Float64Array.from({ length: N }, (_, i) => 0.5 - 0.5 * Math.cos(2 * Math.PI * i / N));
+  const rowBin = Array.from({ length: hP + 1 }, (_, y) => F0 * Math.pow(F1 / F0, 1 - y / hP) * N / sr), dbs = new Float32Array(cols * hP);
+  for (let c = 0; c < cols; c++) { const s0 = Math.min(n - N, Math.floor(c / cols * n)); const re = new Float64Array(N), im = new Float64Array(N); for (let i = 0; i < N; i++) re[i] = 0.5 * (L[s0 + i] + R[s0 + i]) * win[i]; fft(re, im);
+    for (let y = 0; y < hP; y++) { const b0 = Math.max(1, Math.floor(rowBin[y + 1])), b1 = Math.max(b0, Math.ceil(rowBin[y])); let p = 0; for (let k = b0; k <= b1; k++) p = Math.max(p, re[k] * re[k] + im[k] * im[k]);
+      dbs[y * cols + c] = 10 * Math.log10(p + 1e-20); } }
+  const sorted = Float32Array.from(dbs).sort(), top = sorted[Math.floor(sorted.length * 0.995)];   // colour range: the top 70 dB below the 99.5th percentile
+  for (let i = 0; i < dbs.length; i++) { const v = Math.min(1, Math.max(0, (dbs[i] - top + 70) / 70)), [cr, cg, cb] = cmap(v), o = i * 4; img.data[o] = cr; img.data[o + 1] = cg; img.data[o + 2] = cb; img.data[o + 3] = 255; }
+  g.putImageData(img, X0, yP);
+  g.fillStyle = '#7d879c'; g.font = '11px system-ui'; for (const f of [50, 100, 250, 500, 1000, 2000, 4000, 8000, 16000]) { const y = yP + hP * (1 - Math.log(f / F0) / Math.log(F1 / F0)); g.fillText(f >= 1000 ? f / 1000 + 'k' : f, X0 - 34, y + 4); }
+  label(g, 'spectrogram 30 Hz - 16 kHz (log)', X0 + 6, yP + hP - 6);
+  // loudness: momentary (thin), short-term (thick), per-shot integrated (bars), -14 reference
+  const yL = 630, hL = 230, lo = -40, hi = -4, ly = (v) => yL + hL * (1 - (Math.max(lo, Math.min(hi, v)) - lo) / (hi - lo));
+  g.fillStyle = '#121a2c'; g.fillRect(X0, yL, cols, hL);
+  g.fillStyle = '#7d879c'; for (let v = -40; v <= -5; v += 5) { g.fillText(v, X0 - 28, ly(v) + 4); g.strokeStyle = '#ffffff10'; g.beginPath(); g.moveTo(X0, ly(v)); g.lineTo(X1, ly(v)); g.stroke(); }
+  g.strokeStyle = '#ffd36a'; g.setLineDash([6, 5]); g.beginPath(); g.moveTo(X0, ly(-14)); g.lineTo(X1, ly(-14)); g.stroke(); g.setLineDash([]);
+  for (const s of rep.shots) { g.fillStyle = '#3d5a8a88'; g.fillRect(tx(s.t0) + 1, ly(s.lufs), tx(s.t1) - tx(s.t0) - 2, yL + hL - ly(s.lufs)); }
+  const curve = (arr, col, w, yf, tf = (i) => (i + 1) / 10) => { g.strokeStyle = col; g.lineWidth = w; g.beginPath(); arr.forEach((v, i) => { const x = tx(tf(i)); if (i === 0) g.moveTo(x, yf(v)); else g.lineTo(x, yf(v)); }); g.stroke(); g.lineWidth = 1; };
+  curve(rep.curveM, '#8fe3c1aa', 1, ly); curve(rep.curveS.flatMap(v => [v, v, v, v, v]), '#ffffff', 2.2, ly);
+  g.strokeStyle = '#ff7a6a'; g.setLineDash([3, 4]); g.beginPath(); g.moveTo(X0, ly(rep.margin.impactM - 3)); g.lineTo(X1, ly(rep.margin.impactM - 3)); g.stroke(); g.setLineDash([]);
+  label(g, 'loudness: momentary (green) · short-term (white) · per-shot (bars) · -14 LUFS target (yellow) · breakout - 3 LU (red): everything else stays under it', X0 + 6, yL + 14);
+  // phone: mono, 4th-order high-pass 350 Hz, RMS over 400 ms (curve) + per-shot maximum (bars)
+  const yQ = 872, hQ = 170, qlo = -40, qhi = -10, qy = (v) => yQ + hQ * (1 - (Math.max(qlo, Math.min(qhi, v)) - qlo) / (qhi - qlo));
+  g.fillStyle = '#121a2c'; g.fillRect(X0, yQ, cols, hQ);
+  g.fillStyle = '#7d879c'; for (let v = -40; v <= -10; v += 10) { g.fillText(v, X0 - 28, qy(v) + 4); g.strokeStyle = '#ffffff10'; g.beginPath(); g.moveTo(X0, qy(v)); g.lineTo(X1, qy(v)); g.stroke(); }
+  for (const s of SHOTS) { const v = rep.phone[s.id]?.db; if (v == null) continue; g.fillStyle = s.id === 's24' ? '#ff9a5a99' : '#5a7ab588'; g.fillRect(tx(s.t0) + 1, qy(v), tx(s.t1) - tx(s.t0) - 2, yQ + hQ - qy(v)); }
+  curve(rep.phoneCurve.map(p => p[1]), '#ffe08a', 1.3, qy, (i) => rep.phoneCurve[i][0]);
+  label(g, 'phone speaker: mono, high-pass 350 Hz (4th order), RMS 400 ms (dBFS) · bars = loudest 400 ms inside each shot (breakout orange)', X0 + 6, yQ + 14);
+  // cue band gains: the smallest needed band (lo < 250 / mid 250-2k / hi > 2k) rising at each hit and foley event; red < 3 dB
+  const yB = 1055, hB = 180, by = (v) => yB + hB - Math.max(0, Math.min(30, v)) / 30 * (hB - 34);
+  g.fillStyle = '#121a2c'; g.fillRect(X0, yB, cols, hB);
+  g.strokeStyle = '#ff7a6a66'; g.beginPath(); g.moveTo(X0, by(3)); g.lineTo(X1, by(3)); g.stroke();
+  for (const b of rep.bands) { const v = Math.min(...b.need.map(k => b[k])), x = tx(b.t);
+    g.fillStyle = b.weak.length ? '#ff5a4a' : '#6fd08f'; g.fillRect(x - 2, by(v), 4, yB + hB - by(v));
+    g.save(); g.translate(x + 3, by(v) - 3); g.rotate(-Math.PI / 2); g.fillStyle = '#c7cfdf'; g.font = '10px system-ui'; g.fillText(`${b.name} ${v}`, 0, 0); g.restore(); }
+  label(g, 'band gain at every hit and foley mark (smallest needed band, dB over the 60 ms before; red line = 3 dB)', X0 + 6, yB + 14);
+  // cues across the upper lanes
+  g.font = '11px system-ui';
+  for (const [k, t] of Object.entries(r.cues || CUES)) { g.strokeStyle = '#ff9a5a55'; g.beginPath(); g.moveTo(tx(t), yW); g.lineTo(tx(t), yQ + hQ); g.stroke(); g.save(); g.translate(tx(t) + 3, yP + 4); g.rotate(Math.PI / 2); g.fillStyle = '#ffb27a'; g.fillText(k, 0, 0); g.restore(); }
+  g.fillStyle = '#7d879c'; g.font = '11px system-ui'; g.fillText(`master: raw ${ms.rawI} LUFS, gain ${ms.gainDb} dB, ceiling ${ms.ceilUsed} dBTP · render ${r.ms.render} ms · synthesized with Web Audio OfflineAudioContext, no samples`, X0, H - 14);
+}function label(g, s, x, y) { g.font = '12px system-ui'; g.fillStyle = '#c7cfdf'; g.fillText(s, x, y); }
+function cmap(v) { const st = [[0, [12, 16, 28]], [0.3, [28, 52, 110]], [0.55, [38, 140, 160]], [0.75, [230, 200, 90]], [0.9, [255, 140, 70]], [1, [255, 250, 235]]];
+  for (let i = 1; i < st.length; i++) if (v <= st[i][0]) { const k = (v - st[i - 1][0]) / (st[i][0] - st[i - 1][0]), a = st[i - 1][1], b = st[i][1]; return [a[0] + (b[0] - a[0]) * k, a[1] + (b[1] - a[1]) * k, a[2] + (b[2] - a[2]) * k]; } return st[st.length - 1][1]; }
+window.drawSheet = () => { draw(); return true; };
+
+document.getElementById('go').onclick = async () => {
+  const msg = document.getElementById('msg'); msg.textContent = 'rendering…';
+  const r = await render(); draw(r); msg.textContent = `${r.master.I} LUFS · ${r.master.tp} dBTP · rendered in ${(r.ms.render / 1000).toFixed(1)} s`;
+  const ac = new AudioContext(), b = ac.createBuffer(2, r.L.length, r.sr); b.copyToChannel(r.L, 0); b.copyToChannel(r.R, 1);
+  const s = ac.createBufferSource(); s.buffer = b; s.connect(ac.destination); s.start();
+};
+window.audioReady = true;
+</script>
+</body>
+</html>

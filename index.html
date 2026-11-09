@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>RYŪ · 龍</title>
+<style>html,body{margin:0;height:100%;background:#0b0d14;color:#e8ecf4;font:13px system-ui,sans-serif}#mc-boot{position:fixed;inset:0;display:grid;place-items:center;opacity:.7}</style>
+<script type="importmap">
+{ "imports": {
+  "three": "./vendor/three/build/three.module.js",
+  "three/addons/": "./vendor/three/examples/jsm/"
+} }
+</script>
+</head>
+<body>
+<div id="mc-boot">loading RYŪ…</div>
+<script type="module">
+// Live scrub: ?t=12.5 | ?f=300 | ?shot=s16 (or s16@0 / s16@1) | ?scale=1 (full 1080p; default 2 = 960x540) | ?play=1
+// Debug: ?cam=x,y,z&at=x,y,z&fov=40 | ?groups=town,sea | ?labels=1 | ?dragon=0 (skip a department) | ?render=1 (headless)
+import { boot } from './src/main.js';
+import { liveUI } from './src/ui.js';
+const q = new URLSearchParams(location.search);
+const scale = +(q.get('scale') || (q.has('render') ? 1 : 2));
+window.__mc = { ready: null, error: null };
+window.__mc.ready = (async () => {
+  try {
+    const mc = await boot({ scale, query: q });
+    Object.assign(window.__mc, mc);
+    document.getElementById('mc-boot').remove();
+    if (!q.has('render')) { window.__ui = liveUI(mc, q); }
+    else document.body.appendChild(mc.canvas);
+    return true;
+  } catch (e) { window.__mc.error = String(e && e.stack || e); document.getElementById('mc-boot').textContent = 'boot failed: ' + e; console.error(e); throw e; }
+})();
+</script>
+</body>
+</html>
